@@ -1,31 +1,51 @@
 #!/usr/bin/env raku
 use v6;
-use DBIish;
+use SRDM::DataRepository;
+use SRDM::DataTable;
+use SRDM::DataRecord;
 
-# 命令行处理 {{{1
-# 第一个参数决定子命令
-if @*ARGS[0] ∈ <create insert update drop replace view> {
-    @*ARGS[0] = "--sub={@*ARGS[0]}";
-} else {
-    die "The first augment must be create insert update drop view or replace"
-}
+
+# 提取子命令 {{{1
+my $sub-commands := <insert update delete replace view get search export>;
+@*ARGS[0] = "--sub={@*ARGS[0]}" if @*ARGS[0] ∈ $sub-commands;
 
 # 环境变量处理 {{{1
-my $data-engine = %*ENV<SRDM_DATA_MANAGER_ENGINE> //
-    die "Need set environment variable SRDM_DATA_MANAGER_ENGINE first";
-my $data-manager-path = %*ENV<SRDM_DATA_MANAGER_PATH> //
-    die "Need set environment variable SRDM_DATA_MANAGER_FILE first";
+my $dataEngine := %*ENV<SRDM_DATA_MANAGER_ENGINE> // 'SQLite';
+my $dataRepoPath = %*ENV<SRDM_DATA_REPO_PATH> // 
+    $*HOME.add('Documents').add('SRDM');
 die "$data-manager-path must be a directore" 
     unless $data-manager-path.IO.d;
 die "$data-manager-path must be readable and writable"
     unless $data-manager-path.IO.rw;
 my $data-manager-file =
     $data-manager-path.IO.add('variable_description.db').resolve.Str;
+my $data-repo = DataRepository.new: :$data-manager-file;
+
+# 主函数 {{{1
+sub MAIN (Str:D :$sub!, %*options, @*args) {
+    given $sub {
+        when 'delete' { insert(|%options, |@args) }
+        when 'insert' { insert(|%options, |@args) }
+        when 'replace' { insert(|%options, |@args) }
+        when 'update' { insert(|%options, |@args) }
+        when 'get' { insert(|%options, |@args) }
+        when 'view' { insert(|%options, |@args) }
+        when 'search' { insert(|%options, |@args) }
+        when 'export' { insert(|%options, |@args) }
+        default { help }
+    }
+    if $sub eq 'insert'
+
+}
+
+my $data-repo = DataRepository
+
 
 # 定义函数 {{{1
 sub database-connect() {
     DBIish.connect($data-engine, :database«$data-manager-file»)
 }
+
 
 # 创建数据库 {{{1
 multi MAIN (Str:D :$sub! where * eq "create")
