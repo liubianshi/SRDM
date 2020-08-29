@@ -1,107 +1,125 @@
 #!/usr/bin/env raku
 use v6;
+use lib </home/liubianshi/Documents/SRDM/lib>;
 use SRDM::DataRepository;
 use SRDM::DataTable;
 use SRDM::DataRecord;
 
-
 # 提取子命令 {{{1
-my $sub-commands := <insert update delete replace view get search export>;
+my $sub-commands := <insert update delete replace view get search export test>;
 @*ARGS[0] = "--sub={@*ARGS[0]}" if @*ARGS[0] ∈ $sub-commands;
 
 # 环境变量处理 {{{1
-my $dataEngine := %*ENV<SRDM_DATA_MANAGER_ENGINE> // 'SQLite';
-my $dataRepoPath = %*ENV<SRDM_DATA_REPO_PATH> // 
+my $dataRepoPath = %*ENV<SRDM_DATA_REPO_PATH> //
     $*HOME.add('Documents').add('SRDM');
-die "$data-manager-path must be a directore" 
-    unless $data-manager-path.IO.d;
-die "$data-manager-path must be readable and writable"
-    unless $data-manager-path.IO.rw;
-my $data-manager-file =
-    $data-manager-path.IO.add('variable_description.db').resolve.Str;
-my $data-repo = DataRepository.new: :$data-manager-file;
+my $dataRepoFile = $dataRepoPath.IO.add('srdm_dataRepo.db').resolve.Str;
+my $data-repo = DataRepository.new(:$dataRepoFile);
+our $default-engine = "SQlite3";
 
-# 主函数 {{{1
-sub MAIN (Str:D :$sub!, %*options, @*args) {
-    given $sub {
-        when 'delete' { insert(|%options, |@args) }
-        when 'insert' { insert(|%options, |@args) }
-        when 'replace' { insert(|%options, |@args) }
-        when 'update' { insert(|%options, |@args) }
-        when 'get' { insert(|%options, |@args) }
-        when 'view' { insert(|%options, |@args) }
-        when 'search' { insert(|%options, |@args) }
-        when 'export' { insert(|%options, |@args) }
-        default { help }
-    }
-    if $sub eq 'insert'
-
-}
-
-my $data-repo = DataRepository
+our regex database-name { ^ $<database> = [\w+] $                        };
+our regex table-name    { ^ $<database> = [\w+] ':' $<table> = [\w+] $   };
+our regex record-name   { ^ $<database> = [\w+] ':' $<table> = [\w+] ':'
+                            $<record>   = [\w+] $                        };
 
 
-# 定义函数 {{{1
-sub database-connect() {
-    DBIish.connect($data-engine, :database«$data-manager-file»)
-}
-
-
-# 创建数据库 {{{1
-multi MAIN (Str:D :$sub! where * eq "create")
-{
-    my $dbh = database-connect();
-    # 数据库表格
-    my $sth = $dbh.do(qq:to/CREATE_TABLE/);
-        create table if not exists database (
-            name            varchar primary key,
-            description     varchar,
-            path            varchar,
-            engine          varchar not null default "$data-engine",
-            create_at       timestamp not null default current_timestamp,
-            modify_time     timestamp not null default current_timestamp
-        )
-    CREATE_TABLE
-}
-
-# 查询 {{{2
-multi MAIN (
-    Str:D :$sub! where * eq "view",
-    Str   :$database,
-    Str   :$table,
-    *@query-terms,
+# 主函数——插入单条记录 {{{1
+multi MAIN (Str:D :$sub where * eq 'insert',
+    Str :$name! where /<table-name>/ || /<record-name>/,
+    *%fields
 ) {
-    my $dbh = database-connect();
-    if none($database, $table) && @query-terms.elems == 0 {
-        my $sth = $dbh.prepare(qq:to/STATEMENT/);
-            select *
-            from database
-            STATEMENT
-        $sth.execute();
-        my @database-all = $sth.allrows();
-        say @database-all.join: "\n";
+    my $item = do if $<table-name>:exists {
+        die "When inserting a table, primary keys are necessary!" unless %fields<keys>;
+        my $database = $<table-name><database>.Str;
+        my $name     = $<table-name><table>.Str;
+        my $keys     = %fields<keys>;
+        my $engine   = %fields<engine> // $default-engine;
+        my $path     = do with %fields<path> {
+            die "database filename error!"
+                unless .IO.basename ~~ /^ <$database> [\.\w+]? $/;
+            $_;
+        } else {
+            %fields<path> // "\$DATA/" ~ $database ~ ".db";
+        };
+        say $path.raku;
+        Table.new(:$database, :$name, :$keys, :$path, :$engine)
+    } else {
+        my $database = $<record-name><database>.Str;
+        my $table    = $<record-name><table>.Str;
+        my $name     = $<record-name><record>.Str;
+        Record.new(:$database, :$table, :$name);
     }
+
+    for %fields.keys -> $k {
+        next if $k ∈ <database name keys path engine>;
+        next unless $k ∈ $item.all-fields;
+        $item."$k"() = %fields{$k};
+    }
+
+    $data-repo.insert($item);
+    $item.say;
 }
 
-# 插入数据 {{{2
-multi MAIN (
-    Str:D :$sub! where * eq "insert",
-    Str:D :$type! where * eq "database",
-    Str:D :$name!,
-    Str   :$description,
-    Str   :$path,
-    Str   :$engine,
+# 删除记录 {{{1
+multi MAIN (Str:D :$sub where * eq 'delete', *@names,
+    Bool :$table = False, :$filter, Str :$where, *%conditions,
 ) {
-    my $dbh = database-connect();
-    my $sth = $dbh.prepare(q:to/STATEMENT/);
-        INSERT INTO database (name, description, path, engine)
-        VALUES (?, ?, ?, ?)
-    STATEMENT 
-
-    $sth.execute($name, $description // "", $path // "", $engine // $data-engine);
+    my @delete-items;
+    if @names {
+        @delete-items.push: $data-repo.get($_) for @names;
+    } else {
+        @delete-items.push:
+            slip $data-repo.search(:$table, :$filter, :$where, |%conditions)
+    }
+    return unless @delete-items;
+    $_.des for @delete-items;
+    my $confirm = prompt "confirm to delete the above records (y/n): ";
+    return unless $confirm eq 'y'|'Y' ;
+    $data-repo.delete(.fullname, :force) for @delete-items;
 }
 
-# 删除条目 {{{1
+# 测试 {{{1
+multi MAIN(Str:D :$sub where * eq 'test') {
+    $data-repo.test;
+}
 
-# 替换条目 {{{1
+
+# 查询并显示记录 {{{1
+multi MAIN (Str:D :$sub where * eq 'search', *@names,
+    Str  :$mode where any(<detail name-only oneline>) = 'detail',
+    Str  :$output-file,
+    Str  :$output-format where any(<json csv>) = 'json',
+    Bool :$table = False,
+    :$filter,
+    Str :$where,
+    *%conditions,
+) {
+    my @matched-items;
+    if @names {
+        @matched-items.push: $data-repo.get($_) for @names;
+    } else {
+        @matched-items.push:
+            slip $data-repo.search(:$table, :$filter, :$where, |%conditions)
+    }
+    return unless any @matched-items;
+
+    given $mode {
+        when 'name-only' { .fullname.say for @matched-items }
+        when 'detail'    { .say          for @matched-items }
+        when 'oneline'   { .des          for @matched-items }
+        default          { say "invalid mode"               }
+    }
+
+    if $output-file {
+        my @matched-items-hash = @matched-items.map: *.Hash;
+        given $output-format {
+            when 'json'      { ... }
+            when 'csv'       { ... }
+            when 'table'     { ... }
+            when 'markdown'  { ... }
+            when 'pandoc'    { ... }
+            default          { say "invalid output format" }
+        }
+    }
+
+}
 

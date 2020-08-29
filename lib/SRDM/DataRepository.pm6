@@ -5,24 +5,25 @@ use SRDM::DataRecord;
 unit class DataRepository;
 
 # constant and regex 常数和正则表达式 {{{1
-constant $TABLE         = 'data_table';
-constant @TABLE-FIELD   = <name path engine source description script_file
-                           script_tag desc_file desc_tag log_file create_at
-                           modify_at>;
-constant @TABLE-SEARCH  = <name path source>;
-constant $RECORD        = 'data_record';
-constant @RECORD-FIELD  = <name type source label description number missing
-                           unique script_file script_tag desc_file desc_tag
-                           log_file create_at modify_at>;
-constant @RECORD-SEARCH = <name label path source>;
+our constant $TABLE         = 'data_table';
+our constant @TABLE-FIELD   = <name keys path engine source description script_file
+                               script_tag desc_file desc_tag log_file create_at
+                               modify_at>;
+our constant @TABLE-SEARCH  = <name keys path source>;
+our constant $RECORD        = 'data_record';
+our constant @RECORD-FIELD  = <name type source label description number
+                               missNumber uniqueNumber
+                               script_file script_tag desc_file desc_tag
+                               log_file create_at modify_at>;
+our constant @RECORD-SEARCH = <name label path source>;
 
-my regex database-name { ^ $<database> = [\w+] $                        };
-my regex table-name    { ^ $<database> = [\w+] ':' $<table> = [\w+] $   };
-my regex record-name   { ^ $<database> = [\w+] ':' $<table> = [\w+] ':'
-                           $<record>   = [\w+] $                        };
+our regex database-name { ^ $<database> = [\w+] $                        };
+our regex table-name    { ^ $<database> = [\w+] ':' $<table> = [\w+] $   };
+our regex record-name   { ^ $<database> = [\w+] ':' $<table> = [\w+] ':'
+                            $<record>   = [\w+] $                        };
 
 # attributes 对象属性 {{{1
-has Str $.data-manager-file is required;
+has Str $.dataRepoFile is required;
 has $!db;
 
 # initiate database 初始化数据库 {{{1
@@ -30,8 +31,9 @@ method !create-schema() {
     self!db.do(qq:to/SCHEMA/);
         CREATE TABLE IF NOT EXISTS $TABLE (
             name            VARCHAR PRIMARY KEY,
+            keys            VARCHAR NOT NULL,
             path            VARCHAR NOT NULL,
-            engine          VARCHAR NOT NULL default "$data-engine",
+            engine          VARCHAR NOT NULL DEFAULT "SQLite3",
             source          VARCHAR,
             description     VARCHAR,
             script_file     VARCHAR,
@@ -39,34 +41,36 @@ method !create-schema() {
             desc_file       VARCHAR,
             desc_tag        VARCHAR,
             log_file        VARCHAR,
-            create_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            modify_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            create_at       TIMESTAMP NOT NULL DEFAULT (DATETIME('NOW', 'LOCALTIME')),
+            modify_at       TIMESTAMP NOT NULL DEFAULT (DATETIME('NOW', 'LOCALTIME'))
         );
         SCHEMA
+
     self!db.do(qq:to/INDEX/);
         CREATE INDEX IF NOT EXISTS {$TABLE}_name ON
         $TABLE (name);
         INDEX
 
-    self!db.do(qq:to/SCHEMA/);
+    self!db.do(qq:to/SCHEMARECORD/);
         CREATE TABLE IF NOT EXISTS $RECORD (
-            name            VARCHAR PRIMARY KEY,
-            type            VARCHAR NOT NULL,
-            source          VARCHAR,
-            label           VARCHAR,
-            description     VARCHAR,
-            number          INT,
-            missing         INT,
-            unique          INT,
-            script_file     VARCHAR,
-            script_tag      VARCHAR,
-            desc_file       VARCHAR,
-            desc_tag        VARCHAR,
-            log_file        VARCHAR,
-            create_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            modify_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            name         VARCHAR PRIMARY KEY,
+            type         VARCHAR NOT NULL,
+            source       VARCHAR NOT NULL DEFAULT 'unknown',
+            label        VARCHAR NOT NULL,
+            description  VARCHAR,
+            number       INTEGER,
+            missNumber   INTEGER,
+            uniqueNumber INTEGER,
+            script_file  VARCHAR,
+            script_tag   VARCHAR,
+            desc_file    VARCHAR,
+            desc_tag     VARCHAR,
+            log_file     VARCHAR,
+            create_at    TIMESTAMP NOT NULL DEFAULT (DATETIME('NOW', 'LOCALTIME')),
+            modify_at    TIMESTAMP NOT NULL DEFAULT (DATETIME('NOW', 'LOCALTIME'))
         );
-        SCHEMA
+        SCHEMARECORD
+
     self!db.do(qq:to/INDEX/);
         CREATE INDEX IF NOT EXISTS {$RECORD}_name ON
         $RECORD (name);
@@ -75,7 +79,7 @@ method !create-schema() {
 
 method !db() {
     return $!db if $!db;
-    $!db = DBIish.connect('SQLite', :database($!data-manager-file));
+    $!db = DBIish.connect('SQLite', :database($!dataRepoFile));
     self!create-schema();
     return $!db;
 }
@@ -85,15 +89,18 @@ method delete(Str:D $name where /<record-name>/ || /<table-name>/,
               Bool:D :$force = False)
 {
     my $table = $<table-name>:exists ?? $TABLE !! $RECORD;
-    my $item = self!get($name);
+    my $item = self.get($name);
     return unless $item;
 
+    my $sth;
     if $<record-name>:exists {
-        self!db.do(qq:/ DELETE FROME $RECORD where name = $name /);
+        $sth = self!db.prepare(qq/DELETE FROM $RECORD where name = ?/);
+        $sth.execute($name);
     } else {
         die "$name is a table, delete with force" unless $force;
-        self!db.do(qq:/ DELETE FROME $TABLE where name = $name /);
-        self!delete($_.fullname) for $item.records;
+        $sth = self!db.prepare(qq/DELETE FROM $TABLE where name = ?/);
+        $sth.execute($name);
+        self.delete($_.fullname) for $item.records;
     }
 
     return $item
@@ -103,9 +110,9 @@ method delete(Str:D $name where /<record-name>/ || /<table-name>/,
 sub extract-fields( $item where Table | Record ) {
     my @fields := $item ~~ Table ?? @TABLE-FIELD !! @RECORD-FIELD;
     my %fields;
-    for @fields -> $f{
+    for @fields -> $f {
         next if $f eq 'name';
-        next unless $item.^look: $f;
+        next unless $item."$f"().defined;
         %fields{$f} = $item."$f"();
     }
     return %fields;
@@ -115,22 +122,22 @@ sub extract-fields( $item where Table | Record ) {
 multi method get(Str:D $name where /<database-name>/) {
     my @tables = self!search-name-multi($name);
     return Nil unless @tables;
-    @tables = @tables.map: { self!get(%($_)<name>) };
+    @tables = @tables.map: { self.get(%($_)<name>) };
     return @tables;
 }
 
 multi method get(Str:D $name where /<table-name>/ --> Table) {
     my %result = self!search-name-unique($name);
     return Nil unless %result;
-    my $table = self!result-to-table(%result);
+    my $table = result-to-table(%result);
     my @records = self!search-name-multi($name);
-    $table.records = @records ?? @records.map({ self!result-to-record(%($_)) }) !! [];
+    $table.records = @records ?? @records.map({ result-to-record(%($_)) }) !! [];
     return $table;
 }
 
 multi method get(Str:D $name where /<record-name>/ --> Record) {
     my %result = self!search-name-unique($name);
-    return %result ?? self!result-to-record(%result) !! Nil;
+    return %result ?? result-to-record(%result) !! Nil;
 }
 
 # insert new item 将对象插入到数据库 {{{1
@@ -141,12 +148,21 @@ method insert($item where Table | Record) {
     my @keys        = %keys-values.keys;
     my @values      = %keys-values{@keys};
 
+    if $item ~~ Record {
+        my $table-name = $item.database ~ ":" ~ $item.table;
+        my $table-item = self.get($table-name);
+        die "$table-name is not exists, please insert $table-name first!" unless $table-item;
+    }
+
     my $sth = self!db.prepare(qq:to/STATEMENT/);
         INSERT INTO $table (name, {@keys.join(', ')})
         VALUES (?{", ?" x @keys})
         STATEMENT
-    $sth.execute($name, |@values);
-    self.insert($_) for $item.?records;
+        $sth.execute($name, |(@values».Str));
+
+    if $item ~~ Table {
+        self.insert($_) for $item.?records;
+    }
     return $item;
 }
 
@@ -169,58 +185,113 @@ method replace($item where Table | Record) {
 }
 
 # translate result to object 将查询结果转换为数据表或数据记录对象 {{{1
-method !result-to-table(%result --> Table) {
+sub result-to-table(%result --> Table) {
     my $name := m/<table-name>/ with %result<name>;
-    die "result format is wrong!" unless $name and all %result{@TABLE-FIELD}:exists
-
-    my %attr = @TABLE-FIELD.map: { slip $_, %result{$_} };
-    %attr<database> = $names<table-name><database>;
-    %attr<name>     = $names<table-name><table>;
+    die "result format is wrong!"
+        unless $name && all %result{@TABLE-FIELD}:exists;
+    my %attr;
+    %attr<database> = $name<table-name><database>.Str;
+    %attr<name>     = $name<table-name><table>.Str;
+    for @TABLE-FIELD -> $f {
+        next if $f eq 'name';
+        with %result{$f} {
+            if $f eq 'create_at'|'modify_at' {
+                %attr{$f} = DateTime.new: .subst(' ', 'T'), :timezone(28800);
+            } else {
+                %attr{$f} = $_ with %result{$f};
+            }
+        }
+    }
     return Table.new(|%attr);
 }
 
-method !result-to-record(%result --> Record) {
+sub result-to-record(%result --> Record) {
     my $name := m/<record-name>/ with %result<name>;
-    die "result format is wrong!" unless $name and all %result{@RECORD-FIELD}:exists
-
-    my %attr = @RECORD-FIELD.map: { slip $_, %result{$_} };
-    %attr<database> = $names<record-name><database>;
-    %attr<table>    = $names<record-name><table>;
-    %attr<name>     = $names<record-name><record>;
+    die "result format is wrong!"
+        unless $name and all %result{@RECORD-FIELD}:exists;
+    my %attr;
+    %attr<database> = $name<record-name><database>.Str;
+    %attr<table>    = $name<record-name><table>.Str;
+    %attr<name>     = $name<record-name><record>.Str;
+    for @RECORD-FIELD -> $f {
+        next if $f eq 'name';
+        with %result{$f} {
+            if $f eq 'create_at'|'modify_at' {
+                %attr{$f} = DateTime.new: .subst(' ', 'T'), :timezone(28800);
+            } else {
+                %attr{$f} = $_ with %result{$f};
+            }
+        }
+    }
     return Record.new(|%attr);
 }
 
 # search result 从数据库中查询 {{{1
-method search($filter, Bool :$table = False, Str:D :$where, *%conditions)
+method search(:$filter, Bool :$table = False, Str :$where, *%conditions)
 {
+    my $search-table = $table ?? "$TABLE" !! "$RECORD";
+    my ($con, @keys, @values, $sth);
+
     if %conditions {
-        die "Contain wrong condition set!" unless %conditions.keys ⊆ @RECORD-FIELD;
-        $where = [$where].unshift(%condition.map({
-            .key ~ " = " ~ (.value.^name eq ''.^name ?? "'{.value}'" !! "{.value}")
-        })).join(" AND ");
+        if $table { 
+            die "Contain wrong condition set!" 
+                unless %conditions.keys ⊆ @TABLE-FIELD;
+        } else {
+            die "Contain wrong condition set!" 
+                unless %conditions.keys ⊆ @RECORD-FIELD;
+        }
+        @keys = %conditions.keys;
+        @values = %conditions{@keys};
+        $con = @keys.map({$_ ~ " = ?"}).join(" AND ");
     }
 
-    my $search-table = $table ?? "$TABLE" !! "$RECORD";
-    my $sth = self!db.prepare(« SELECT * FROM $search-table WHERE $where »);
-    $sth.execute();
+    if $con {
+        $con = $_ ~ "and" ~ $con with $where;
+        $sth = self!db.prepare(qq:to/SELECT/);
+            SELECT * FROM $search-table WHERE $con;
+            SELECT
+        $sth.execute(|@values);
+    } elsif $where {
+        $sth = self!db.prepare(qq:to/SELECT/);
+            SELECT * FROM $search-table WHERE $where
+            SELECT
+        $sth.execute;
+    } else {
+        $sth = self!db.prepare(qq/SELECT * FROM $search-table/);
+        $sth.execute;
+    }
+
     my @results = $sth.allrows(:array-of-hash);
 
-    my @search-keys  = $table ?? @TABLE-SEARCH !! @RECORD-SEARCH;
-    my $filter-regex = /$filter/ unless $filter.isa: Regex;
-    return do given @results.grep({any($_{@search-keys}) ~~ $filter-regex}) {
+    unless $filter {
+        return do given @results {
+            when $table { .map(&result-to-table)  }
+            default     { .map(&result-to-record) }
+        }
+    }
+    my @search-keys   = $table ?? @TABLE-SEARCH !! @RECORD-SEARCH;
+    my $filter-regex  = $filter.isa(Regex) ?? $filter !! /<$filter>/;
+    my @results-match = @results.grep: {
+        $_{@search-keys}
+        .grep(?*)
+        .map({ $_ ~~ $filter })
+        .any
+    };
+
+    return do given @results-match {
         when $table { .map(&result-to-table)  }
         default     { .map(&result-to-record) }
     }
 }
 
 method !search-name-multi(Str:D $name where /<database-name>/ || /<table-name>/) {
-    my $table = ($<table-name>:exists) ?? "$TABLE" !! "$RECORD";
+    my $table = ($<database-name>:exists) ?? "$TABLE" !! "$RECORD";
     my $sth = self!db.prepare(qq:to/STATEMENT/);
-        SELECT * FROM $table WHERE name LIKE {$name}%
+        SELECT * FROM $table WHERE name LIKE ?
         STATEMENT
-    $sth.execute();
-    my @results := $sth.allrows(:array-of-hash);
-    return $results == 0 ?? [] !! @results;
+    $sth.execute("{$name}%");
+    my @results = $sth.allrows(:array-of-hash);
+    return @results == 0 ?? [] !! @results;
 }
 
 method !search-name-unique( Str:D $name where /<record-name>/ || /<table-name>/) {
@@ -231,7 +302,7 @@ method !search-name-unique( Str:D $name where /<record-name>/ || /<table-name>/)
     $sth.execute($name);
     my @result = $sth.allrows(:array-of-hash);
     die "Multi rows!!!" if @result > 1;
-    return $result == 0 ?? %() !! %(@result[0]);
+    return @result == 0 ?? %() !! %(@result[0]);
 }
 
 # update 更新数据库 {{{1
@@ -244,7 +315,7 @@ method update($item where Table | Record) {
     my %keys-values = extract-fields($item);
     my @update-list;
     for %keys-values.keys -> $k {
-        next if $item-old."$k"();
+        next if $item-old."$k"().defined;
         @update-list.push:
             "$k = " ~ ($_.isa(Str) ?? qq/"$_"/ !! $_) with %keys-values{$k};
     }
@@ -256,4 +327,17 @@ method update($item where Table | Record) {
     self.update($_) for $item.?records;
 }
 
-
+# test {{{1
+method test {
+    my $sth = self!db.prepare(qq:to/TEST/);
+    SELECT * FROM $RECORD;
+    TEST
+    $sth.execute;
+    my @results = $sth.allrows(:array-of-hash);
+    for @results -> %r {
+        say "=" x 45;
+        for @RECORD-FIELD -> $key {
+            say sprintf "%-12s %-30s", "$key", "$_" with %r{$key};
+        }
+    };
+}
