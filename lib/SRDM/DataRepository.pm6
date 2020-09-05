@@ -11,9 +11,8 @@ our constant @TABLE-FIELD   = <name keys path engine source description script_f
                                modify_at>;
 our constant @TABLE-SEARCH  = <name keys path source>;
 our constant $RECORD        = 'data_record';
-our constant @RECORD-FIELD  = <name type source label description number
-                               missNumber uniqueNumber
-                               script_file script_tag desc_file desc_tag
+our constant @RECORD-FIELD  = <name type source label description number missNumber
+                               uniqueNumber script_file script_tag desc_file desc_tag
                                log_file create_at modify_at>;
 our constant @RECORD-SEARCH = <name label path source>;
 
@@ -90,19 +89,14 @@ method delete(Str:D $name where /<record-name>/ || /<table-name>/,
 {
     my $table = $<table-name>:exists ?? $TABLE !! $RECORD;
     my $item = self.get($name);
-    return unless $item;
+    return Nil unless $item;
 
-    my $sth;
-    if $<record-name>:exists {
-        $sth = self!db.prepare(qq/DELETE FROM $RECORD where name = ?/);
-        $sth.execute($name);
-    } else {
+    if $<table-name>:exists {
         die "$name is a table, delete with force" unless $force;
-        $sth = self!db.prepare(qq/DELETE FROM $TABLE where name = ?/);
-        $sth.execute($name);
         self.delete($_.fullname) for $item.records;
     }
-
+    my $sth = self!db.prepare(qq/DELETE FROM $table where name = ?/);
+        $sth.execute($name);
     return $item
 }
 
@@ -148,6 +142,7 @@ method insert($item where Table | Record) {
     my @keys        = %keys-values.keys;
     my @values      = %keys-values{@keys};
 
+    # 在插入普通记录时，先确定表格是否存在
     if $item ~~ Record {
         my $table-name = $item.database ~ ":" ~ $item.table;
         my $table-item = self.get($table-name);
@@ -158,7 +153,7 @@ method insert($item where Table | Record) {
         INSERT INTO $table (name, {@keys.join(', ')})
         VALUES (?{", ?" x @keys})
         STATEMENT
-        $sth.execute($name, |(@values».Str));
+    $sth.execute($name, |(@values».Str));
 
     if $item ~~ Table {
         self.insert($_) for $item.?records;
@@ -233,52 +228,36 @@ method search(:$filter, Bool :$table = False, Str :$where, *%conditions)
     my ($con, @keys, @values, $sth);
 
     if %conditions {
-        if $table { 
-            die "Contain wrong condition set!" 
-                unless %conditions.keys ⊆ @TABLE-FIELD;
-        } else {
-            die "Contain wrong condition set!" 
-                unless %conditions.keys ⊆ @RECORD-FIELD;
-        }
-        @keys = %conditions.keys;
+        die "Contain wrong condition set!" unless
+            ($table && %conditions.keys ⊆ @TABLE-FIELD) ||
+            (!$table && %conditions.keys ⊆ @RECORD-FIELD);
+        @keys   = %conditions.keys;
         @values = %conditions{@keys};
-        $con = @keys.map({$_ ~ " = ?"}).join(" AND ");
-    }
-
-    if $con {
-        $con = $_ ~ "and" ~ $con with $where;
+        $con    = @keys.map({$_ ~ " = ?"}).join(" AND ");
+        $con ~= " AND " ~ $_ with $where;
         $sth = self!db.prepare(qq:to/SELECT/);
             SELECT * FROM $search-table WHERE $con;
             SELECT
         $sth.execute(|@values);
-    } elsif $where {
-        $sth = self!db.prepare(qq:to/SELECT/);
-            SELECT * FROM $search-table WHERE $where
-            SELECT
-        $sth.execute;
     } else {
-        $sth = self!db.prepare(qq/SELECT * FROM $search-table/);
+        $sth = self!db.prepare(qq:to/SELECT/);
+            SELECT * FROM $search-table {$where ?? "WHERE $where" !! ''}
+            SELECT
         $sth.execute;
     }
 
     my @results = $sth.allrows(:array-of-hash);
 
-    unless $filter {
-        return do given @results {
-            when $table { .map(&result-to-table)  }
-            default     { .map(&result-to-record) }
+    if $filter {
+        my @search-keys  = $table ?? @TABLE-SEARCH !! @RECORD-SEARCH;
+        my $filter-regex = $filter.isa(Regex) ?? $filter !! /<$filter>/;
+        my @temp      = @results.grep: {
+            so any $_{@search-keys}.grep(?*).map({ $_ ~~ $filter-regex })
         }
+        @results = @temp;
     }
-    my @search-keys   = $table ?? @TABLE-SEARCH !! @RECORD-SEARCH;
-    my $filter-regex  = $filter.isa(Regex) ?? $filter !! /<$filter>/;
-    my @results-match = @results.grep: {
-        $_{@search-keys}
-        .grep(?*)
-        .map({ $_ ~~ $filter })
-        .any
-    };
 
-    return do given @results-match {
+    return do given @results {
         when $table { .map(&result-to-table)  }
         default     { .map(&result-to-record) }
     }
@@ -294,7 +273,9 @@ method !search-name-multi(Str:D $name where /<database-name>/ || /<table-name>/)
     return @results == 0 ?? [] !! @results;
 }
 
-method !search-name-unique( Str:D $name where /<record-name>/ || /<table-name>/) {
+method !search-name-unique(
+    Str:D $name where /<record-name>/ || /<table-name>/
+) {
     my $table = ($<table-name>:exists) ?? "$TABLE" !! "$RECORD";
     my $sth = self!db.prepare(qq:to/STATEMENT/);
         SELECT * FROM $table WHERE name = ?
