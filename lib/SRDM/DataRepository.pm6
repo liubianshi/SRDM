@@ -222,7 +222,7 @@ sub result-to-record(%result --> Record) {
 }
 
 # search result 从数据库中查询 {{{1
-method search(:$filter, Bool :$table = False, Str :$where, *%conditions)
+method search(*@names, :$filter, Bool :$table = False, Str :$where, *%conditions)
 {
     my $search-table = $table ?? "$TABLE" !! "$RECORD";
     my ($con, @keys, @values, $sth);
@@ -236,12 +236,13 @@ method search(:$filter, Bool :$table = False, Str :$where, *%conditions)
         $con    = @keys.map({$_ ~ " = ?"}).join(" AND ");
         $con ~= " AND " ~ $_ with $where;
         $sth = self!db.prepare(qq:to/SELECT/);
-            SELECT * FROM $search-table WHERE $con;
+            SELECT * FROM $search-table WHERE $con --case-insensitive;
             SELECT
         $sth.execute(|@values);
     } else {
         $sth = self!db.prepare(qq:to/SELECT/);
-            SELECT * FROM $search-table {$where ?? "WHERE $where" !! ''}
+            SELECT * FROM $search-table
+                {$where ?? "WHERE $where" !! ''} --case-insensitive
             SELECT
         $sth.execute;
     }
@@ -251,9 +252,14 @@ method search(:$filter, Bool :$table = False, Str :$where, *%conditions)
     if $filter {
         my @search-keys  = $table ?? @TABLE-SEARCH !! @RECORD-SEARCH;
         my $filter-regex = $filter.isa(Regex) ?? $filter !! /<$filter>/;
-        my @temp      = @results.grep: {
+        my @temp = @results.grep: {
             so any $_{@search-keys}.grep(?*).map({ $_ ~~ $filter-regex })
         }
+        @results = @temp;
+    }
+
+    if @names {
+        my @temp = @results.grep: { so $_<name>.contains(any(@names), :i) }
         @results = @temp;
     }
 

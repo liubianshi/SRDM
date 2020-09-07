@@ -120,13 +120,8 @@ multi MAIN (Str:D :$sub where * eq 'search', *@names,
     Str :$where,
     *%conditions,
 ) {
-    my @matched-items;
-    if @names {
-        @matched-items.push: $data-repo.get($_) for @names;
-    } else {
-        @matched-items.push:
-            slip $data-repo.search(:$table, :$filter, :$where, |%conditions)
-    }
+    my @matched-items = $data-repo.search(
+        |@names, :$table, :$filter, :$where, |%conditions);
     return unless any @matched-items;
 
     given $mode {
