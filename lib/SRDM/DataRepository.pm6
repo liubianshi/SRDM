@@ -96,7 +96,7 @@ method delete(Str:D $name where /<record-name>/ || /<table-name>/,
         self.delete($_.fullname) for $item.records;
     }
     my $sth = self!db.prepare(qq/DELETE FROM $table where name = ?/);
-        $sth.execute($name);
+    $sth.execute($name);
     return $item
 }
 

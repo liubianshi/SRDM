@@ -10,8 +10,7 @@ my $sub-commands := <insert update delete replace view get search export test fi
 @*ARGS[0] = "--sub={@*ARGS[0]}" if @*ARGS[0] ∈ $sub-commands;
 
 # 环境变量处理 {{{1
-my $dataRepoPath = %*ENV<SRDM_DATA_REPO_PATH> //
-    $*HOME.add('Documents').add('SRDM');
+my $dataRepoPath = %*ENV<SRDM_DATA_REPO_PATH> // $*HOME.add('Documents').add('SRDM');
 my $dataRepoFile = $dataRepoPath.IO.add('srdm_dataRepo.sqlite').resolve.Str;
 my $data-repo = DataRepository.new(:$dataRepoFile);
 our $default-engine = "SQlite3";
@@ -60,24 +59,43 @@ sub insert(Str :$name! where /<table-name>/ || /<record-name>/, *%fields) {
     $data-repo.insert($item);
     $item.say;
 }
-    
-    
+
+
 # 主函数——插入单条记录 {{{1
 multi MAIN (
-    Str :$sub where * eq 'insert',
+    Str :$sub   where * eq 'insert',
     Str :$name! where /<table-name>/ || /<record-name>/,
     *%fields
 ) {
     insert(:$name, |%fields);
 }
 
-# 主函数——插入文件记录
-multi MAIN (IO(Str) $file, Str :$sub where * eq 'file') {
+# 主函数——插入文件记录 {{{1
+multi MAIN (IO(Str) $file, Str :$sub where * eq 'file', :$replace = False) {
     my @records = gather for $file.lines -> $l {
         take $<attr>.split("\x[06]").map({ slip $_.split("\x[02]") }).Hash
-            if $l ~~ /^\s* srdm\t$<attr> = [.*] $/
+            if $l ~~ /^\s* srdm\t$<attr> = [.*] $/;
     }
-    for @records -> %r { insert(|%r)  }
+
+    for @records -> %r {
+        say %r<name>.raku;
+        my $exits-item = $data-repo.get(%r<name>);
+        with $exits-item {
+            die "%r<name> records already exits! Using '--replace'" unless $replace;
+            my $delete-item = $data-repo.delete($exits-item.fullname, :force);
+            try {
+                insert(|%r);
+                CATCH {
+                    default {
+                        say "Uncaught exception {.^name}";
+                        $data-repo.insert($delete-item);
+                    }
+                }
+            }
+        } else {
+            insert(|%r);
+        }
+    }
 }
 
 
